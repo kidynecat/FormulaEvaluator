@@ -1,36 +1,20 @@
-﻿ <Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Description>Runtime expressions parser and evaluator (formulas, conditions, method calls, properties/indexers etc). Builds LINQ expression tree and compiles it to lambda delegate with full support of dynamically typed variables.
-	
-Source code and examples: https://github.com/nreco/lambdaparser	
-</Description>
-    <Title>Dynamic expressions evaluator</Title>
-    <Copyright>Copyright (c) 2013-2024 Vitalii Fedorchenko and contributors</Copyright>
+    <Description>Runtime expressions parser and evaluator (formulas, conditions, method calls, properties/indexers etc). Builds LINQ expression tree and compiles it to lambda delegate with full support of dynamically typed variables.</Description>
+	<Title>Dynamic expressions evaluator</Title>
+    <Copyright>Copyright (c) 2013-2020 Vitalii Fedorchenko</Copyright>
     <AssemblyTitle>NReco.LambdaParser</AssemblyTitle>
-    <VersionPrefix>1.1.3</VersionPrefix>
+    <VersionPrefix>1.0.12</VersionPrefix>
     <Authors>Vitalii Fedorchenko</Authors>
-    <TargetFrameworks>netstandard2.0;netstandard1.3;net45</TargetFrameworks>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <AssemblyName>NReco.LambdaParser</AssemblyName>
     <AssemblyOriginatorKeyFile>NReco.LambdaParser.snk</AssemblyOriginatorKeyFile>
     <SignAssembly>False</SignAssembly>
+    <PublicSign Condition=" '$(OS)' != 'Windows_NT' ">true</PublicSign>
     <PackageId>NReco.LambdaParser</PackageId>
-    <PackageTags>LambdaParser;Formula;Parser;Math;Expression;Evaluator;Eval;LINQ-dynamic;netstandard;netcore;net45;</PackageTags>
-	<PackageReleaseNotes>
-v.1.1.3 changes:
-- fixed version mismatch #52
-v.1.1.2 changes:
-- use concurrent dictionary to replace lock #51	
-	
-v.1.1.1 changes:
-- added support for optional parameters in method calls #44 (via OptionsParamsInvokeMethod impl)	
-- added support for 'params' arguments in method calls #45 (via OptionsParamsInvokeMethod impl)
-	
-v.1.1.0 changes:
-- variables in expressions #42 (to enable use LambdaParser.AllowVars)	
-- Sequence of ternary operators #43
-	
+    <PackageTags>LambdaParser;Formula;Parser;Math;Expression;Evaluator;Eval;LINQ-dynamic;PCL;netstandard;netcore;net40;net45;WindowsPhone8;Silverlight</PackageTags>
+	<PackageReleaseNotes>Source code and examples: https://github.com/nreco/lambdaparser
 v.1.0.12 changes:
 - fixed an issue when comparison result is used as an argument in a method call #30
 
@@ -72,11 +56,69 @@ v.1.0.6 changes:
     <GenerateNeutralResourcesLanguageAttribute>false</GenerateNeutralResourcesLanguageAttribute>
     <GenerateAssemblyVersionAttribute>false</GenerateAssemblyVersionAttribute>
     <GenerateAssemblyFileVersionAttribute>false</GenerateAssemblyFileVersionAttribute>
+    <BaseOutputPath>..\Assemblies\NReco.LambdaParser</BaseOutputPath>
+    <TargetFramework>netstandard2.0</TargetFramework>
 	
   </PropertyGroup>
+
+  <PropertyGroup Condition="'$(TargetFramework)' == 'portable-net45+win8+wpa81+wp8'">
+    <TargetFrameworkIdentifier>.NETPortable</TargetFrameworkIdentifier>
+    <TargetFrameworkVersion>v4.5</TargetFrameworkVersion>
+    <TargetFrameworkProfile>Profile259</TargetFrameworkProfile>
+    <NugetTargetMoniker>.NETPortable,Version=v0.0,Profile=Profile259</NugetTargetMoniker>
+    <LanguageTargets>$(MSBuildExtensionsPath32)\Microsoft\Portable\$(TargetFrameworkVersion)\Microsoft.Portable.CSharp.targets</LanguageTargets>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(TargetFramework)' == 'portable-net40+sl5+win8+wpa81+wp8'">
+    <TargetFrameworkIdentifier>.NETPortable</TargetFrameworkIdentifier>
+    <TargetFrameworkVersion>v4.0</TargetFrameworkVersion>
+    <TargetFrameworkProfile>Profile328</TargetFrameworkProfile>
+    <NugetTargetMoniker>.NETPortable,Version=v0.0,Profile=Profile328</NugetTargetMoniker>
+    <LanguageTargets>$(MSBuildExtensionsPath32)\Microsoft\Portable\$(TargetFrameworkVersion)\Microsoft.Portable.CSharp.targets</LanguageTargets>
+    <DefineConstants>$(DefineConstants);NET40</DefineConstants>	
+  </PropertyGroup>
+  
+  <ItemGroup Condition=" '$(TargetFramework)' == 'portable45-net45+win8+wp8+wpa81' ">
+	<Reference Include="System" />
+	<Reference Include="System.Collections" />
+	<Reference Include="System.Core" />
+	<Reference Include="System.IO" />
+	<Reference Include="System.Reflection" />
+	<Reference Include="System.Linq" />
+	<Reference Include="System.Linq.Expressions" />
+	<Reference Include="System.Runtime" />
+	<Reference Include="System.Resources.ResourceManager" />
+	<Reference Include="System.Reflection.Extensions" />
+	<Reference Include="System.Globalization" />
+	<Reference Include="System.Runtime.Extensions" />
+	<Reference Include="System.Threading" />
+  </ItemGroup>
+
+  <ItemGroup Condition=" '$(TargetFramework)' == 'portable-net45+win8+wpa81+wp8' ">
+	<Reference Include="System.Core" />
+	<Reference Include="System" />
+	<Reference Include="System.Collections" />
+	<Reference Include="System.IO" />
+	<Reference Include="System.Reflection" />
+	<Reference Include="System.Linq" />
+	<Reference Include="System.Linq.Expressions" />
+	<Reference Include="System.Runtime" />	
+	<Reference Include="System.Resources.ResourceManager" />	
+	<Reference Include="System.Reflection.Extensions" />
+	<Reference Include="System.Globalization" />	
+	<Reference Include="System.Runtime.Extensions" />
+	<Reference Include="System.Threading" />	
+  </ItemGroup>   
+  
+  <ItemGroup Condition=" '$(TargetFramework)' == 'portable-net40+sl5+win8+wpa81+wp8' ">
+	<Reference Include="mscorlib" />
+	<Reference Include="System.Core" />
+	<Reference Include="System" />
+  </ItemGroup> 
 
   <ItemGroup Condition=" '$(TargetFramework)' == 'netstandard1.3' ">
     <PackageReference Include="System.Reflection.TypeExtensions" Version="4.1.0" />
   </ItemGroup>
+
+  <Target Name="_GetRestoreSettingsPerFramework"></Target>
   
 </Project>

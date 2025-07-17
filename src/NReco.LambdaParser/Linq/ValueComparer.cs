@@ -55,7 +55,11 @@ namespace NReco.Linq {
 		}
 
 		private bool IsAssignableFrom(Type a, Type b) {
+			#if NET40
+			return a.IsAssignableFrom(b);
+			#else
 			return a.GetTypeInfo().IsAssignableFrom(b.GetTypeInfo() );
+			#endif
 		}
 
 		int IComparer.Compare(object a, object b) {

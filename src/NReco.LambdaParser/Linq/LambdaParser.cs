@@ -13,7 +13,6 @@
 #endregion
 
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
@@ -21,6 +20,7 @@ using System.Text;
 using System.Reflection;
 using System.ComponentModel;
 using System.Globalization;
+
 
 namespace NReco.Linq {
 	
@@ -30,7 +30,7 @@ namespace NReco.Linq {
 	public class LambdaParser {
 
 		static readonly char[] delimiters = new char[] {
-			'(', ')', '[', ']', '?', ':', ';', '.', ',', '=', '<', '>', '!', '&', '|', '*', '/', '%', '+','-', '{', '}'};
+			'(', ')', '[', ']', '?', ':', '.', ',', '=', '<', '>', '!', '&', '|', '*', '/', '%', '+','-', '{', '}'};
 		static readonly char[] specialNameChars = new char[] {
 			'_' };
 		const char charQuote = '"';
@@ -38,17 +38,13 @@ namespace NReco.Linq {
 		static readonly string[] addOps = new[] { "+", "-" };
 		static readonly string[] eqOps = new[] { "==", "!=", "<", ">", "<=", ">=" };
 
-		readonly IDictionary<string, CompiledExpression> CachedExpressions = new ConcurrentDictionary<string, CompiledExpression>();
+		readonly IDictionary<string, CompiledExpression> CachedExpressions = new Dictionary<string, CompiledExpression>();
+		readonly object _lock = new object();
 
 		/// <summary>
 		/// Gets or sets whether LambdaParser should use the cache for parsed expressions.
 		/// </summary>
 		public bool UseCache { get; set; }
-		
-		/// <summary>
-		/// Gets or sets whether LambdaParser should allow numbers without leading zeroes.
-		/// </summary>
-		public bool AllowNoLeadingZeroes { get; set; }
 
 		/// <summary>
 		/// Allows usage of "=" for equality comparison (in addition to "=="). False by default.
@@ -56,45 +52,24 @@ namespace NReco.Linq {
 		public bool AllowSingleEqualSign { get; set; }
 
 		/// <summary>
-		/// Allows usage of "var" assignments that may go before resulting expression. False by default.
+		/// When set to false, it will throw an error for unknown parameters.
 		/// </summary>
-		/// <example><code>var test = "test"; test+" works!"</code></example>
-		public bool AllowVars { get; set; }
+		public bool AllowUnknownVariables { get; set; }
 
 		/// <summary>
 		/// Gets value comparer used by the parser for comparison operators.
 		/// </summary>
 		public IValueComparer Comparer { get; private set; }
 
-		/// <summary>
-		/// Gets invoke method class used by the parser for invoking methods.
-		/// </summary>
-		public IInvokeMethod Invoker { get; private set; }
-
-		LambdaParameterWrapperContext _LambdaParamCtx = null;
-		LambdaParameterWrapperContext LambdaParamCtx => _LambdaParamCtx ??
-			(_LambdaParamCtx = new LambdaParameterWrapperContext(Comparer, Invoker));
-
 		public LambdaParser() {
 			UseCache = true;
-			AllowNoLeadingZeroes = false;
 			AllowSingleEqualSign = false;
-			AllowVars = false;
+			AllowUnknownVariables = false;
 			Comparer = ValueComparer.Instance;
-			Invoker = InvokeMethod.Instance;
 		}
 
 		public LambdaParser(IValueComparer valueComparer) : this() {
 			Comparer = valueComparer;
-		}
-
-		public LambdaParser(IInvokeMethod invokeMethod) : this() {
-			Invoker = invokeMethod;
-		}
-
-		public LambdaParser(IValueComparer valueComparer, IInvokeMethod invokeMethod) : this() {
-			Comparer = valueComparer;
-			Invoker = invokeMethod;
 		}
 
 		internal class ExtractParamsVisitor : ExpressionVisitor {
@@ -104,11 +79,8 @@ namespace NReco.Linq {
 			}
 
 			public override Expression Visit(Expression node) {
-				if (node != null && node.NodeType == ExpressionType.Parameter) {
-					var paramExpr = (ParameterExpression)node;
-					if (paramExpr.Name!=null) // local vars don't have names
-						ParamsList.Add(paramExpr);
-				}
+				if (node!=null && node.NodeType == ExpressionType.Parameter)
+					ParamsList.Add( (ParameterExpression)node);
 				return base.Visit(node);
 			}
 		}
@@ -122,15 +94,24 @@ namespace NReco.Linq {
 		public object Eval(string expr, IDictionary<string, object> vars) {
 			return Eval(expr, (varName) => {
 				object val = null;
-				vars.TryGetValue(varName, out val);
-				return val;
+				if (vars.TryGetValue(varName, out val) || AllowUnknownVariables)
+				{
+					return val;
+				}
+				else
+				{
+					throw new LambdaParserException(expr, "Unknown Variable");
+				}
+				
 			});
 		}
 
 		public object Eval(string expr, Func<string,object> getVarValue) {
 			CompiledExpression compiledExpr = null;
 			if (UseCache) {
-				CachedExpressions.TryGetValue(expr, out compiledExpr);
+				lock (_lock) {
+					CachedExpressions.TryGetValue(expr, out compiledExpr);
+				}
 			}
 
 			if (compiledExpr == null) {
@@ -140,14 +121,16 @@ namespace NReco.Linq {
 				};
 				var lambdaExpr = Expression.Lambda(linqExpr, compiledExpr.Parameters);
 				compiledExpr.Lambda = lambdaExpr.Compile();
-
+				
 				if (UseCache)
-					CachedExpressions[expr] = compiledExpr;
+					lock (_lock) {
+						CachedExpressions[expr] = compiledExpr;
+					}
 			}
 
 			var valuesList = new List<object>();
 			foreach (var paramExpr in compiledExpr.Parameters) {
-				valuesList.Add( new LambdaParameterWrapper( getVarValue(paramExpr.Name), LambdaParamCtx) );
+				valuesList.Add( new LambdaParameterWrapper( getVarValue(paramExpr.Name), Comparer) );
 			}
 
 			var lambdaRes = compiledExpr.Lambda.DynamicInvoke(valuesList.ToArray());
@@ -158,29 +141,7 @@ namespace NReco.Linq {
 
 
 		public Expression Parse(string expr) {
-			ParseResult parseResult;
-			if (AllowVars) {
-				var assigns = new List<Expression>();
-				var varExprs = new List<ParameterExpression>();
-				var vars = new Variables(false);
-				int start = 0;
-				do {
-					var assignResult = ParseVar(expr, start, vars);
-					if (assignResult.Expr == null)
-						break;
-					assigns.Add(assignResult.Expr);
-					varExprs.Add(assignResult.VarExpr);
-					vars.Define(assignResult.VarName, assignResult.VarExpr);
-					start = assignResult.End;
-				} while (true);
-				parseResult = ParseConditional(expr, start, vars);
-				if (assigns.Count>0) {
-					assigns.Add(parseResult.Expr); // last entry is a result
-					parseResult.Expr = Expression.Block(varExprs, assigns);
-				}
-			} else {
-				parseResult = ParseConditional(expr, 0, new Variables());
-			}
+			var parseResult = ParseConditional(expr, 0);
 			var lastLexem = ReadLexem(expr, parseResult.End);
 			if (lastLexem.Type != LexemType.Stop)
 				throw new LambdaParserException(expr, parseResult.End, "Invalid expression");
@@ -197,14 +158,6 @@ namespace NReco.Linq {
 				if (Array.IndexOf(delimiters, s[lexem.End]) >= 0) {
 					if (lexem.Type == LexemType.Unknown) {
 						lexem.End++;
-						if (AllowNoLeadingZeroes 
-								&& lexem.Start == lexem.End - 1 
-								&& s[lexem.Start] == '.' 
-								&& lexem.End < s.Length 
-								&& char.IsDigit(s[lexem.End])) {
-							lexem.Type = LexemType.NumberConstant;
-							continue;
-						}
 						lexem.Type = LexemType.Delimiter;
 						return lexem;
 					}
@@ -257,59 +210,29 @@ namespace NReco.Linq {
 		}
 
 
-		static readonly ConstructorInfo LambdaParameterWrapperConstructor =
-			typeof(LambdaParameterWrapper).GetConstructor(new[] { typeof(object), typeof(LambdaParameterWrapperContext) });
+		static readonly ConstructorInfo LambdaParameterWrapperConstructor = 
+			#if NET40
+			typeof(LambdaParameterWrapper).GetConstructor(new[] { typeof(object) });
+			#else
+			typeof(LambdaParameterWrapper).GetTypeInfo().DeclaredConstructors.First();
+			#endif
 
-		protected ParseVarResult ParseVar(string expr, int start, Variables vars) {
-			var varLexem = ReadLexem(expr, start);
-			if (varLexem.Type==LexemType.Name && varLexem.GetValue()=="var") {
-				var varNameLexem = ReadLexem(expr, varLexem.End);
-				if (varNameLexem.Type != LexemType.Name)
-					throw new LambdaParserException(expr, varLexem.End, "Expected variable name");
-				var varName = varNameLexem.GetValue();
-				var eqLexem = ReadLexem(expr, varNameLexem.End);
-				if (eqLexem.Type!=LexemType.Delimiter || eqLexem.GetValue() != "=")
-					throw new LambdaParserException(expr, varNameLexem.End, "Expected '='");
-				var varValExpr = ParseConditional(expr, eqLexem.End, vars);
-				var varEndLexem = ReadLexem(expr, varValExpr.End);
-				if (varEndLexem.Type!=LexemType.Delimiter || varEndLexem.GetValue()!=";")
-					throw new LambdaParserException(expr, varValExpr.End, "Expected ';'");
-				var varParamExpr = Expression.Variable(typeof(LambdaParameterWrapper), null);
-				return new ParseVarResult() {
-					VarName = varName,
-					VarExpr = varParamExpr,
-					Expr = Expression.Assign(
-						varParamExpr,
-						Expression.New(
-							LambdaParameterWrapperConstructor,
-							Expression.TypeAs(varValExpr.Expr, typeof(object)),
-							Expression.Constant(LambdaParamCtx, typeof(LambdaParameterWrapperContext))
-						)),
-					End = varEndLexem.End
-				};
-			}
-			return new ParseVarResult() {
-				Expr = null,
-				End = start
-			};
-		}
-
-		protected ParseResult ParseConditional(string expr, int start, Variables vars) {
-			var testExpr = ParseOr(expr, start, vars);
+		protected ParseResult ParseConditional(string expr, int start) {
+			var testExpr = ParseOr(expr, start);
  			var ifLexem = ReadLexem(expr, testExpr.End);
 			if (ifLexem.Type == LexemType.Delimiter && ifLexem.GetValue() == "?") {
 				// read positive expr
-				var positiveOp = ParseOr(expr, ifLexem.End, vars);
+				var positiveOp = ParseOr(expr, ifLexem.End);
 				var positiveOpExpr = Expression.New(LambdaParameterWrapperConstructor, 
 						Expression.Convert(positiveOp.Expr,typeof(object)),
-						Expression.Constant(LambdaParamCtx, typeof(LambdaParameterWrapperContext)));
+						Expression.Constant(Comparer));
 
 				var elseLexem = ReadLexem(expr, positiveOp.End);
 				if (elseLexem.Type == LexemType.Delimiter && elseLexem.GetValue() == ":") {
-					var negativeOp = ParseConditional(expr, elseLexem.End, vars);
+					var negativeOp = ParseOr(expr, elseLexem.End);
 					var negativeOpExpr = Expression.New(LambdaParameterWrapperConstructor, 
 							Expression.Convert( negativeOp.Expr, typeof(object)),
-							Expression.Constant(LambdaParamCtx, typeof(LambdaParameterWrapperContext)));
+							Expression.Constant(Comparer));
 					return new ParseResult() {
 						End = negativeOp.End,
 						Expr = Expression.Condition( Expression.IsTrue( testExpr.Expr ), positiveOpExpr, negativeOpExpr)
@@ -328,8 +251,8 @@ namespace NReco.Linq {
 			return expr;
 		}
 
-		protected ParseResult ParseOr(string expr, int start, Variables vars) {
-			var firstOp = ParseAnd(expr, start, vars);
+		protected ParseResult ParseOr(string expr, int start) {
+			var firstOp = ParseAnd(expr, start);
 			do {
 				var opLexem = ReadLexem(expr, firstOp.End);
 				var isOr = false;
@@ -342,7 +265,7 @@ namespace NReco.Linq {
 				}
 
 				if (isOr) {
-					var secondOp = ParseOr(expr, opLexem.End, vars);
+					var secondOp = ParseOr(expr, opLexem.End);
 					firstOp = new ParseResult() {
 						End = secondOp.End,
 						Expr = Expression.OrElse( 
@@ -355,8 +278,8 @@ namespace NReco.Linq {
 			return firstOp;
 		}
 
-		protected ParseResult ParseAnd(string expr, int start, Variables vars) {
-			var firstOp = ParseEq(expr, start, vars);
+		protected ParseResult ParseAnd(string expr, int start) {
+			var firstOp = ParseEq(expr, start);
 			do {
 				var opLexem = ReadLexem(expr, firstOp.End);
 				var isAnd = false;
@@ -369,7 +292,7 @@ namespace NReco.Linq {
 				}
 
 				if (isAnd) {
-					var secondOp = ParseAnd(expr, opLexem.End, vars);
+					var secondOp = ParseAnd(expr, opLexem.End);
 					firstOp = new ParseResult() {
 						End = secondOp.End,
 						Expr = Expression.AndAlso(
@@ -382,8 +305,8 @@ namespace NReco.Linq {
 			return firstOp;
 		}
 
-		protected ParseResult ParseEq(string expr, int start, Variables vars) {
-			var firstOp = ParseAdditive(expr, start, vars);
+		protected ParseResult ParseEq(string expr, int start) {
+			var firstOp = ParseAdditive(expr, start);
 			do {
 				var opLexem = ReadLexem(expr, firstOp.End);
 				if (opLexem.Type == LexemType.Delimiter) {
@@ -391,7 +314,7 @@ namespace NReco.Linq {
 					if (nextOpLexem.Type == LexemType.Delimiter) {
 						var opVal = opLexem.GetValue() + nextOpLexem.GetValue();
 						if (eqOps.Contains(opVal)) {
-							var secondOp = ParseAdditive(expr, nextOpLexem.End, vars);
+							var secondOp = ParseAdditive(expr, nextOpLexem.End);
 
 							switch (opVal) {
 								case "==":
@@ -427,7 +350,7 @@ namespace NReco.Linq {
 
 					if (opLexem.GetValue() == ">" || opLexem.GetValue() == "<" 
 						|| (AllowSingleEqualSign && opLexem.GetValue() == "=") ) {
-						var secondOp = ParseAdditive(expr, opLexem.End, vars);
+						var secondOp = ParseAdditive(expr, opLexem.End);
 						switch (opLexem.GetValue()) {
 							case ">":
 								firstOp = new ParseResult() {
@@ -457,12 +380,12 @@ namespace NReco.Linq {
 		}
 
 
-		protected ParseResult ParseAdditive(string expr, int start, Variables vars) {
-			var firstOp = ParseMultiplicative(expr, start, vars);
+		protected ParseResult ParseAdditive(string expr, int start) {
+			var firstOp = ParseMultiplicative(expr, start);
 			do {
 				var opLexem = ReadLexem(expr, firstOp.End);
 				if (opLexem.Type == LexemType.Delimiter && addOps.Contains(opLexem.GetValue())) {
-					var secondOp = ParseMultiplicative(expr, opLexem.End, vars);
+					var secondOp = ParseMultiplicative(expr, opLexem.End);
 					var res = new ParseResult() { End = secondOp.End };
 					switch (opLexem.GetValue()) {
 						case "+":
@@ -480,12 +403,12 @@ namespace NReco.Linq {
 			return firstOp;
 		}
 
-		protected ParseResult ParseMultiplicative(string expr, int start, Variables vars) {
-			var firstOp = ParseUnary(expr, start, vars);
+		protected ParseResult ParseMultiplicative(string expr, int start) {
+			var firstOp = ParseUnary(expr, start);
 			do {
 				var opLexem = ReadLexem(expr, firstOp.End);
 				if (opLexem.Type == LexemType.Delimiter && mulOps.Contains(opLexem.GetValue())) {
-					var secondOp = ParseUnary(expr, opLexem.End, vars);
+					var secondOp = ParseUnary(expr, opLexem.End);
 					var res = new ParseResult() { End = secondOp.End };
 					switch (opLexem.GetValue()) {
 						case "*":
@@ -506,27 +429,32 @@ namespace NReco.Linq {
 			return firstOp;
 		}
 
-		protected ParseResult ParseUnary(string expr, int start, Variables vars) {
+		protected ParseResult ParseUnary(string expr, int start) {
 			var opLexem = ReadLexem(expr, start);
 			if (opLexem.Type == LexemType.Delimiter) {
 				switch (opLexem.GetValue()) {
 					case "-": {
-						var operand = ParsePrimary(expr, opLexem.End, vars);
+						var operand = ParsePrimary(expr, opLexem.End);
 						operand.Expr = Expression.Negate(operand.Expr);
 						return operand;
 					}
 					case "!": {
-						var operand = ParsePrimary(expr, opLexem.End, vars);
+						var operand = ParsePrimary(expr, opLexem.End);
 						operand.Expr = Expression.Not(operand.Expr);
 						return operand;
 					}
 				}
 			}
-			return ParsePrimary(expr, start, vars);
+			return ParsePrimary(expr, start);
 		}
 
 		private static MethodInfo GetLambdaParameterWrapperMethod(string methodName) {
+			#if NET40
+			return typeof(LambdaParameterWrapper).GetMethod(methodName,
+				BindingFlags.Instance | BindingFlags.Public);
+			#else
 			return typeof(LambdaParameterWrapper).GetTypeInfo().DeclaredMethods.Where(m=>m.Name==methodName).First();
+			#endif
 		}
 
 		static readonly MethodInfo InvokeMethodMI = GetLambdaParameterWrapperMethod("InvokeMethod");
@@ -539,8 +467,8 @@ namespace NReco.Linq {
 
 		static readonly MethodInfo CreateDictionaryMI = GetLambdaParameterWrapperMethod("CreateDictionary");
 
-		protected ParseResult ParsePrimary(string expr, int start, Variables vars) {
-			var val = ParseValue(expr, start, vars);
+		protected ParseResult ParsePrimary(string expr, int start) {
+			var val = ParseValue(expr, start);
 			do {
 				var lexem = ReadLexem(expr, val.End);
 				if (lexem.Type==LexemType.Delimiter) {
@@ -550,12 +478,12 @@ namespace NReco.Linq {
 							var openCallLexem = ReadLexem(expr, memberLexem.End);
 							if (openCallLexem.Type == LexemType.Delimiter && openCallLexem.GetValue() == "(") {
 								var methodParams = new List<Expression>();
-								var paramsEnd = ReadCallArguments(expr, openCallLexem.End, ")", methodParams, vars);
+								var paramsEnd = ReadCallArguments(expr, openCallLexem.End, ")", methodParams);
 								var paramsExpr = Expression.NewArrayInit(typeof(object), methodParams);
 								val = new ParseResult() {
 									End = paramsEnd,
 									Expr = Expression.Call(
-										Expression.Constant(new LambdaParameterWrapper(null, LambdaParamCtx)),
+										Expression.Constant(new LambdaParameterWrapper(null,Comparer)),
 										InvokeMethodMI, 
 										val.Expr, 
 										Expression.Constant(memberLexem.GetValue()),
@@ -567,7 +495,7 @@ namespace NReco.Linq {
 								val = new ParseResult() {
 									End = memberLexem.End,
 									Expr = Expression.Call(
-										Expression.Constant(new LambdaParameterWrapper(null, LambdaParamCtx)),
+										Expression.Constant(new LambdaParameterWrapper(null, Comparer)),
 										InvokePropertyOrFieldMI,
 										val.Expr, Expression.Constant(memberLexem.GetValue()))
 								};
@@ -576,11 +504,11 @@ namespace NReco.Linq {
 						}
 					} else if (lexem.GetValue()=="[") {
 						var indexerParams = new List<Expression>();
-						var paramsEnd = ReadCallArguments(expr, lexem.End, "]", indexerParams, vars);
+						var paramsEnd = ReadCallArguments(expr, lexem.End, "]", indexerParams);
 						val = new ParseResult() {
 							End = paramsEnd,
 							Expr = Expression.Call(
-								Expression.Constant(new LambdaParameterWrapper(null, LambdaParamCtx)),
+								Expression.Constant(new LambdaParameterWrapper(null, Comparer)),
 								InvokeIndexerMI, val.Expr, 
 								Expression.NewArrayInit(typeof(object), indexerParams)
 							)
@@ -588,12 +516,12 @@ namespace NReco.Linq {
 						continue;
 					} else if (lexem.GetValue()=="(") {
 						var methodParams = new List<Expression>();
-						var paramsEnd = ReadCallArguments(expr, lexem.End, ")", methodParams, vars);
+						var paramsEnd = ReadCallArguments(expr, lexem.End, ")", methodParams);
 						var paramsExpr = Expression.NewArrayInit(typeof(object), methodParams);
 						val = new ParseResult() {
 							End = paramsEnd,
 							Expr = Expression.Call(
-								Expression.Constant(new LambdaParameterWrapper(null, LambdaParamCtx)),
+								Expression.Constant(new LambdaParameterWrapper(null, Comparer)),
 								InvokeDelegateMI, 
 								val.Expr, paramsExpr)
 						};
@@ -605,7 +533,7 @@ namespace NReco.Linq {
 			return val;
 		}
 
-		protected int ReadCallArguments(string expr, int start, string endLexem, List<Expression> args, Variables vars) {
+		protected int ReadCallArguments(string expr, int start, string endLexem, List<Expression> args) {
 			var end = start;
 			do {
 				var lexem = ReadLexem(expr, end);
@@ -620,7 +548,7 @@ namespace NReco.Linq {
 					}
 				}
 				// read parameter
-				var paramExpr = ParseConditional(expr, end, vars);
+				var paramExpr = ParseConditional(expr, end);
 				var argExpr = paramExpr.Expr;
 				if (!(argExpr is ConstantExpression constExpr && constExpr.Value is LambdaParameterWrapper)) {
 					// result may be a primitive type like bool
@@ -631,11 +559,11 @@ namespace NReco.Linq {
 			} while (true);
 		}
 
-		protected ParseResult ParseValue(string expr, int start, Variables vars) {
+		protected ParseResult ParseValue(string expr, int start) {
 			var lexem = ReadLexem(expr, start);
 
 			if (lexem.Type == LexemType.Delimiter && lexem.GetValue() == "(") {
-				var groupRes = ParseConditional(expr, lexem.End, vars);
+				var groupRes = ParseConditional(expr, lexem.End);
 				var endLexem = ReadLexem(expr, groupRes.End);
 				if (endLexem.Type != LexemType.Delimiter || endLexem.GetValue() != ")")
 					throw new LambdaParserException(expr, endLexem.Start, "Expected ')'");
@@ -648,35 +576,33 @@ namespace NReco.Linq {
 				}
 				return new ParseResult() { 
 					End = lexem.End, 
-					Expr = Expression.Constant(new LambdaParameterWrapper( numConst, LambdaParamCtx) ) };
+					Expr = Expression.Constant(new LambdaParameterWrapper( numConst, Comparer) ) };
 			} else if (lexem.Type == LexemType.StringConstant) {
 				return new ParseResult() { 
 					End = lexem.End, 
-					Expr = Expression.Constant( new LambdaParameterWrapper( lexem.GetValue(), LambdaParamCtx) ) };
+					Expr = Expression.Constant( new LambdaParameterWrapper( lexem.GetValue(), Comparer) ) };
 			} else if (lexem.Type == LexemType.Name) {
 				// check for predefined constants
 				var val = lexem.GetValue();
 				switch (val) {
 					case "true":
-						return new ParseResult() { End = lexem.End, Expr = Expression.Constant(new LambdaParameterWrapper(true, LambdaParamCtx) ) };
+						return new ParseResult() { End = lexem.End, Expr = Expression.Constant(new LambdaParameterWrapper(true, Comparer) ) };
 					case "false":
-						return new ParseResult() { End = lexem.End, Expr = Expression.Constant(new LambdaParameterWrapper(false, LambdaParamCtx) ) };
+						return new ParseResult() { End = lexem.End, Expr = Expression.Constant(new LambdaParameterWrapper(false, Comparer) ) };
 					case "null":
-						return new ParseResult() { End = lexem.End, Expr = Expression.Constant(new LambdaParameterWrapper(null, LambdaParamCtx)) };
+						return new ParseResult() { End = lexem.End, Expr = Expression.Constant(new LambdaParameterWrapper(null, Comparer)) };
 					case "new":
-						return ReadNewInstance(expr, lexem.End, vars);
+						return ReadNewInstance(expr, lexem.End);
 				}
 
 				// todo 
-				var localVarExpr = vars.Get(val);
-				return new ParseResult() { 
-					End = lexem.End, 
-					Expr = localVarExpr!=null ? localVarExpr : Expression.Parameter(typeof(LambdaParameterWrapper), val) };
+
+				return new ParseResult() { End = lexem.End, Expr = Expression.Parameter(typeof(LambdaParameterWrapper), val) };
 			}
 			throw new LambdaParserException(expr, start, "Expected value");
 		}
 
-		protected ParseResult ReadNewInstance(string expr, int start, Variables vars) {
+		protected ParseResult ReadNewInstance(string expr, int start) {
 			var nextLexem = ReadLexem(expr, start);
 			if (nextLexem.Type == LexemType.Delimiter && nextLexem.GetValue() == "[") {
 				nextLexem = ReadLexem(expr, nextLexem.End);
@@ -688,13 +614,13 @@ namespace NReco.Linq {
 					throw new LambdaParserException(expr, nextLexem.Start, "Expected '{'");
 
 				var arrayArgs = new List<Expression>();
-				var end = ReadCallArguments(expr, nextLexem.End, "}", arrayArgs, vars);
+				var end = ReadCallArguments(expr, nextLexem.End, "}", arrayArgs);
 				var newArrExpr = Expression.NewArrayInit(typeof(object), arrayArgs );
 				return new ParseResult() { 
 					End = end,
 					Expr = Expression.New(LambdaParameterWrapperConstructor, 
 						Expression.Convert(newArrExpr, typeof(object)),
-						Expression.Constant(LambdaParamCtx, typeof(LambdaParameterWrapperContext)))
+						Expression.Constant(Comparer)) 
 				};
 			}
 			if (nextLexem.Type == LexemType.Name && nextLexem.GetValue().ToLower() == "dictionary") {
@@ -709,7 +635,7 @@ namespace NReco.Linq {
 					if (!(nextLexem.Type == LexemType.Delimiter && nextLexem.GetValue() == "{"))
 						throw new LambdaParserException(expr, nextLexem.Start, "Expected '{'");
 					var entryArgs = new List<Expression>();
-					var end = ReadCallArguments(expr, nextLexem.End, "}", entryArgs, vars);
+					var end = ReadCallArguments(expr, nextLexem.End, "}", entryArgs);
 					if (entryArgs.Count!=2)
 						throw new LambdaParserException(expr, nextLexem.Start, "Dictionary entry should have exactly 2 arguments");
 					
@@ -728,7 +654,7 @@ namespace NReco.Linq {
 				return new ParseResult() {
 					End = nextLexem.End,
 					Expr = Expression.Call(
-						Expression.Constant(new LambdaParameterWrapper(null, LambdaParamCtx)),
+						Expression.Constant(new LambdaParameterWrapper(null, Comparer)),
 						CreateDictionaryMI,
 						newKeysArrExpr, newValuesArrExpr)
 				};
@@ -769,37 +695,11 @@ namespace NReco.Linq {
 			public int End;
 		}
 
-		protected struct ParseVarResult {
-			public Expression Expr;
-			public int End;
-			public string VarName;
-			public ParameterExpression VarExpr;
-		}
-
 		public class CompiledExpression {
 			public Delegate Lambda;
 			public ParameterExpression[] Parameters;
 		}
 
-		protected class Variables {
 
-			Dictionary<string, ParameterExpression> NameToVarExpr;
-
-			public Variables(bool zeroVars = true) {
-				if (!zeroVars)
-					NameToVarExpr = new Dictionary<string, ParameterExpression>();
-			}
-
-			public void Define(string name, ParameterExpression varExpr) {
-				NameToVarExpr[name] = varExpr;
-			}
-
-			public ParameterExpression Get(string name) {
-				if (NameToVarExpr!=null && NameToVarExpr.TryGetValue(name, out var expr)) {
-					return expr;
-				}
-				return null;
-			}
-		} 
 	}
 }

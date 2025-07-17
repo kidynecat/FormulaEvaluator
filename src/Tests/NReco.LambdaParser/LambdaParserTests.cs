@@ -2,7 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.Collections;
 using System.Diagnostics;
+using System.Text;
+
 using Xunit;
+using System.Linq;
 
 namespace NReco.Linq.Tests {
 
@@ -29,6 +32,38 @@ namespace NReco.Linq.Tests {
 			varContext["oneDay"] = new TimeSpan(1,0,0,0);
 			varContext["twoDays"] = new TimeSpan(2,0,0,0);
 			return varContext;
+		}
+
+		[Fact]
+		public void UnknownVariable()
+		{
+			var lambdaParser = new LambdaParser();
+
+			var varContext = getContext();
+			Assert.ThrowsAny<Exception>(() => { lambdaParser.Eval("abcd", varContext); });
+		}
+
+		[Fact]
+		public void ArrayArgumentsTest()
+		{
+			var lambdaParser = new LambdaParser();
+
+			var varContext = getContext();
+
+			Assert.Equal("12",lambdaParser.Eval("testObj.StringArray(new[]{\"1\",\"2\"})", varContext));
+
+			var result1 = lambdaParser.Eval("testObj.Concatenate(\"a\",\"b\",\"c\")", varContext);
+			Assert.Equal("abc", result1);
+
+			var result1_0 = lambdaParser.Eval("testObj.Concatenate(new [] {\"a\",\"b\",\"c\"})", varContext);
+
+			var result1_1 = lambdaParser.Eval("testObj.Concatenate(null)", varContext);
+
+			var result2 = lambdaParser.Eval("testObj.ParamsArgWithOtherArgs(\"start\", 1000,\"a\",\"b\",\"c\",\"d\" )", varContext);
+			Assert.Equal("start1000abcd", result2);
+
+			var result3 = lambdaParser.Eval("testObj.Sum(1,2,100,2.5)", varContext);
+			Assert.Equal((decimal)105.5, (decimal)result3);
 		}
 
 		[Fact]
@@ -68,12 +103,6 @@ namespace NReco.Linq.Tests {
 			Assert.Equal(5M, lambdaParser.Eval("pi>one && 0<one ? (1+8)/3+1*two : 0", varContext));
 
 			Assert.Equal(4M, lambdaParser.Eval("pi>0 ? one+two+one : 0", varContext));
-
-			Assert.Equal("lightgreen", lambdaParser.Eval("pi<0 ? \"red\" : (pi<25 ? \"lightgreen\" : \"green\") ", varContext));
-
-			Assert.Equal("white", lambdaParser.Eval("pi<1 ? \"red\"\n: (pi<2 ? \"lightgreen\"\n: (pi<3 ? \"green\"\n: \"white\" ) ) ", varContext));
-
-			Assert.Equal("white", lambdaParser.Eval("pi<1 ? \"red\"\n: pi<2 ? \"lightgreen\"\n: pi<3 ? \"green\"\n: \"white\" ", varContext));
 
 			Assert.Equal(DateTime.Now.Year, lambdaParser.Eval("now.Year", varContext) );
 
@@ -128,30 +157,7 @@ namespace NReco.Linq.Tests {
 			Assert.Equal(new TimeSpan(1,0,0,0), lambdaParser.Eval("twoDays + -oneDay", varContext));
 			Assert.Equal(new TimeSpan(1,0,0,0).Negate(), lambdaParser.Eval("oneDay - twoDays", varContext));
 			Assert.Equal(new TimeSpan(1,0,0,0).Negate(), lambdaParser.Eval("-twoDays + oneDay", varContext));
-
-			
 		}
-
-		[Fact]
-		public void OptionsParams() {
-			//Use new invoker
-			var lambdaParser = new LambdaParser(OptionsParamsInvokeMethod.Instance);
-			var varContext = getContext();
-
-			Assert.True((bool)lambdaParser.Eval("testObj.OptionalParam(true,true)", varContext));
-			Assert.False((bool)lambdaParser.Eval("testObj.OptionalParam(true,true,false)", varContext));
-
-			Assert.True((bool)lambdaParser.Eval("testObj.OptionalParam2(true,true)", varContext));
-			Assert.False((bool)lambdaParser.Eval("testObj.OptionalParam2(true,true,true,\"fail\")", varContext));
-
-			Assert.True((bool)lambdaParser.Eval("testObj.TestShadowMethod()", varContext));
-
-			Assert.True((bool)lambdaParser.Eval("testObj.TestShadowProperty", varContext));
-
-			Assert.Equal("Test123ThisIsaTest", (string)lambdaParser.Eval("testObj.ParamMethodTest(\"Test\",123,\"This\",\"Is\",\"a\",\"Test\")", varContext));
-			Assert.Equal("Today is Saturday, Day 9 of December", lambdaParser.Eval("testObj.Format(\"Today is {0}, Day {1} of {2}\",\"Saturday\",9,\"December\")", varContext));
-		}
-
 
 		[Fact]
 		public void SingleEqualSign() {
@@ -160,26 +166,6 @@ namespace NReco.Linq.Tests {
 			lambdaParser.AllowSingleEqualSign = true;
 			Assert.True((bool)lambdaParser.Eval("null = nullVar", varContext));
 			Assert.True((bool)lambdaParser.Eval("5 = (5+1-1)", varContext));
-		}
-
-		[Fact]
-		public void VarsInExpression() {
-			var varContext = getContext();
-			var lambdaParser = new LambdaParser();
-			lambdaParser.AllowVars = true;
-
-			Assert.Equal("False", lambdaParser.Eval("var a = null == nullVar; (!a).ToString()", varContext));
-			Assert.Equal(2M, lambdaParser.Eval("var a = two*2; var b = a*2; b/a", varContext));
-			Assert.True( (bool) lambdaParser.Eval("var a = toString(true); a==\"True\"", varContext));
-			Assert.Throws<LambdaParserException>( () => {
-				lambdaParser.Eval("var a = two*2; ", varContext);
-			});
-			Assert.Throws<LambdaParserException>(() => {
-				lambdaParser.Eval("var a; 5", varContext);
-			});
-			Assert.Throws<LambdaParserException>(() => {
-				lambdaParser.Eval("var a=; 5", varContext);
-			});
 		}
 
 		[Fact]
@@ -216,36 +202,8 @@ namespace NReco.Linq.Tests {
 			Console.WriteLine("10000 iterations: {0}", sw.Elapsed);
 		}
 
-		[Fact]
-		public void AllowNoLeadingZeroesFalse()
-		{
-			var parser = new LambdaParser { AllowNoLeadingZeroes = false };
-			var exception = Assert.Throws<LambdaParserException>(() => parser.Eval(".6", new Dictionary<string, object>()));
-			Assert.Equal(".6", exception.Expression);
-			Assert.Equal(0, exception.Index);
-		}
-		
-		[Fact]
-		public void AllowNoLeadingZeroesTrue()
-		{
-			var parser = new LambdaParser { AllowNoLeadingZeroes = true };
-			var result = parser.Eval(".6", new Dictionary<string, object>());
-			Assert.Equal(0.6m, result);
-		}
 
-		public class TestBaseClass
-		{
-
-			public bool TestShadowMethod()
-			{
-				return false;
-			}
-
-			public int TestShadowProperty { get { return 0; } }
-
-		}
-
-		public class TestClass : TestBaseClass {
+		public class TestClass {
 
 			public int IntProp { get { return 1; } }
 
@@ -282,33 +240,26 @@ namespace NReco.Linq.Tests {
 				};
 			}
 
-			public bool OptionalParam(bool First, bool Second, bool Third = true) 			
+			public string Concatenate(params string[] texts)
 			{
-				return First & Second & Third;
+				return string.Join("", texts);
 			}
 
-            public bool OptionalParam2(bool First, bool Second, bool Third = true, string Forth = "pass")
-            {
-                return First & Second & Third & Forth == "pass";
-            }
-
-            public new bool TestShadowMethod()
-            {
-				return true;
-            }
-
-			public new bool TestShadowProperty { get { return true; } }
-
-			public string ParamMethodTest(string First, int Second, params string[] args)
+			public decimal Sum(params decimal[] vals)
 			{
-				return string.Concat(First, Second) + string.Concat(args);
+				decimal sum = vals.Sum();
+				return sum;
 			}
 
-			public string Format(string format,params object[] args)
-            {
-				return String.Format(format, args);
-            }
+			public string StringArray(string[] texts)
+			{
+				return string.Join("", texts);
+			}
 
+			public object ParamsArgWithOtherArgs(string startString, int int1, params string[] texts)
+			{
+				return startString + int1.ToString() + string.Join("", texts);
+			}
 		}
 
 	}

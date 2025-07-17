@@ -39,5 +39,11 @@ namespace NReco.Linq {
 			Expression = expr;
 			Index = idx;
 		}
+
+		public LambdaParserException(string expr, string msg)
+			: base(String.Format("{0}: {1}", msg, expr) ) {
+			Expression = expr;
+			Index = 0;
+		}
 	}
 }

@@ -18,50 +18,83 @@ using System.Collections;
 using System.Text;
 using System.Reflection;
 
-namespace NReco.Linq {
+namespace NReco {
 	
 	/// <summary>
 	/// Invoke object's method that is most compatible with provided arguments
 	/// </summary>
-	public class InvokeMethod : IInvokeMethod {
+	internal class InvokeMethod {
 
-		internal readonly static InvokeMethod _Instance = new InvokeMethod();
+		public object TargetObject { get; set; }
 
-		public static Linq.IInvokeMethod Instance => _Instance;
+		public string MethodName { get; set; }
 
-		protected MethodInfo FindMethod(object targetObject, string methodName, Type[] argTypes) {
-			if (targetObject is Type) {
+		public InvokeMethod(object o, string methodName) {
+			TargetObject = o;
+			MethodName = methodName;
+		}
+
+		protected MethodInfo FindMethod(Type[] argTypes) {
+			if (TargetObject is Type) {
 				// static method
-				return ((Type)targetObject).GetRuntimeMethod(methodName, argTypes);
+				#if NET40
+				return ((Type)TargetObject).GetMethod(MethodName, BindingFlags.Static | BindingFlags.Public);
+				#else
+				return ((Type)TargetObject).GetRuntimeMethod(MethodName, argTypes);
+				#endif
 			}
-			return targetObject.GetType().GetRuntimeMethod(methodName, argTypes);
+			#if NET40
+			return TargetObject.GetType().GetMethod(MethodName, argTypes);
+			#else
+			return TargetObject.GetType().GetRuntimeMethod(MethodName, argTypes);
+			#endif
 		}
 
-		protected IEnumerable<MethodInfo> GetAllMethods(object targetObject) {
-			if (targetObject is Type) {
-				return ((Type)targetObject).GetRuntimeMethods();
+		protected IEnumerable<MethodInfo> GetAllMethods() {
+			if (TargetObject is Type) {
+				#if NET40
+				return ((Type)TargetObject).GetMethods(BindingFlags.Static | BindingFlags.Public);
+				#else
+				return ((Type)TargetObject).GetRuntimeMethods();
+				#endif
 			}
-			return targetObject.GetType().GetRuntimeMethods();
+			#if NET40
+			return TargetObject.GetType().GetMethods();
+			#else
+			return TargetObject.GetType().GetRuntimeMethods();
+			#endif
 		}
 
-		public object Invoke(object targetObject, string methodName, object[] args) {
-			Type[] argTypes = new Type[args.Length];
-			for (int i = 0; i < argTypes.Length; i++)
-				argTypes[i] = args[i] != null ? args[i].GetType() : typeof(object);
-
+		public object Invoke(object[] args) {
+			var argTypes = GetArgTypes(args);
 			// strict matching first
-			MethodInfo targetMethodInfo = FindMethod(targetObject, methodName, argTypes);
+			MethodInfo targetMethodInfo = FindMethod(argTypes);
 			// fuzzy matching
 			if (targetMethodInfo==null) {
-				var methods = GetAllMethods(targetObject);
+				var methods = GetAllMethods();
 
 				foreach (var m in methods)
-					if (m.Name==methodName &&
-						m.GetParameters().Length == args.Length &&
-						CheckParamsCompatibility(m.GetParameters(), argTypes, args)) {
-						targetMethodInfo = m;
-						break;
+				{
+					if (m.Name == MethodName)
+					{
+						var methodParameters = m.GetParameters();
+						var methodParameterLength = methodParameters.Length;
+
+						if (methodParameterLength > 0 && methodParameters[methodParameterLength - 1].IsDefined(typeof(ParamArrayAttribute), false)
+							&& !(args.Length == methodParameterLength && (args[args.Length - 1]?.GetType() == typeof(object[]))))
+						{
+							args = ResetArgsForParamArrayArg(args, methodParameterLength - 1);
+							argTypes = GetArgTypes(args);
+						}
+
+						if (methodParameterLength == args.Length &&
+							CheckParamsCompatibility(methodParameters, argTypes, args))
+						{
+							targetMethodInfo = m;
+							break;
+						}
 					}
+				}
 			}
 			if (targetMethodInfo == null) {
 				string[] argTypeNames = new string[argTypes.Length];
@@ -69,12 +102,12 @@ namespace NReco.Linq {
 					argTypeNames[i] = argTypes[i].Name;
 				string argTypeNamesStr = String.Join(",",argTypeNames);
 				throw new MissingMemberException(
-						(targetObject is Type ? (Type)targetObject : targetObject.GetType()).FullName+"."+methodName );
+						(TargetObject is Type ? (Type)TargetObject : TargetObject.GetType()).FullName+"."+MethodName );
 			}
-			object[] argValues = PrepareActualValues(methodName,targetMethodInfo.GetParameters(),args);
+			object[] argValues = PrepareActualValues(targetMethodInfo.GetParameters(),args);
 			object res = null;
 			try {
-				res = targetMethodInfo.Invoke( targetObject is Type ? null : targetObject, argValues);
+				res = targetMethodInfo.Invoke( TargetObject is Type ? null : TargetObject, argValues);
 			} catch (TargetInvocationException tiEx) {
 				if (tiEx.InnerException!=null)
 					throw new Exception(tiEx.InnerException.Message, tiEx.InnerException);
@@ -86,7 +119,11 @@ namespace NReco.Linq {
 		}
 
 		internal static bool IsInstanceOfType(Type t, object val) {
+			#if NET40 
+			return t.IsInstanceOfType(val);
+			#else
 			return val!=null && t.GetTypeInfo().IsAssignableFrom(val.GetType().GetTypeInfo());
+			#endif
 		}
 
 		protected bool CheckParamsCompatibility(ParameterInfo[] paramsInfo, Type[] types, object[] values) {
@@ -96,11 +133,24 @@ namespace NReco.Linq {
 				if (IsInstanceOfType(paramType, val))
 					continue;
 				// null and reference types
-				if (val==null && !paramType.GetTypeInfo().IsValueType)
+				if (val==null && 
+					#if NET40
+					!paramType.IsValueType
+					#else 
+					!paramType.GetTypeInfo().IsValueType
+					#endif
+				)
 					continue;
 				// possible autocast between generic/non-generic common types
 				try {
-					Convert.ChangeType(val, paramType, System.Globalization.CultureInfo.InvariantCulture);
+					if (IsArray(val, paramType, out Type elementType))
+					{
+						ConvertObjectArray(val as object[], elementType);
+					}
+					else
+					{
+						Convert.ChangeType(val, paramType, System.Globalization.CultureInfo.InvariantCulture);
+					}
 					continue;
 				} catch { }
 				//if (ConvertManager.CanChangeType(types[i],paramType))
@@ -112,7 +162,7 @@ namespace NReco.Linq {
 		}
 
 
-		protected object[] PrepareActualValues(string methodName, ParameterInfo[] paramsInfo, object[] values) {
+		protected object[] PrepareActualValues(ParameterInfo[] paramsInfo, object[] values) {
 			object[] res = new object[paramsInfo.Length];
 			for (int i=0; i<paramsInfo.Length; i++) {
 				if (values[i]==null || IsInstanceOfType( paramsInfo[i].ParameterType, values[i])) {
@@ -120,18 +170,91 @@ namespace NReco.Linq {
 					continue;
 				}
 				try {
-					res[i] = Convert.ChangeType( values[i], paramsInfo[i].ParameterType, System.Globalization.CultureInfo.InvariantCulture );
+					if (IsArray(values[i], paramsInfo[i].ParameterType, out Type elementType))
+					{
+						res[i] = ConvertObjectArray(values[i] as object[], elementType);
+					}
+					else
+					{
+						res[i] = Convert.ChangeType(values[i], paramsInfo[i].ParameterType, System.Globalization.CultureInfo.InvariantCulture);
+					}
 					continue;
 				} catch { 
 					throw new InvalidCastException( 
 						String.Format("Invoke method '{0}': cannot convert argument #{1} from {2} to {3}",
-							methodName, i, values[i].GetType(), paramsInfo[i].ParameterType));
+							MethodName, i, values[i].GetType(), paramsInfo[i].ParameterType));
 				}
 			}
 			return res;
 		}
 
+		protected Type[] GetArgTypes(object[] args)
+		{
+			Type[] argTypes = new Type[args.Length];
+			for (int i = 0; i < argTypes.Length; i++)
+				argTypes[i] = args[i] != null ? args[i].GetType() : typeof(object);
+			return argTypes;
+		}
 
+		protected object[] ResetArgsForParamArrayArg(object[] args, int paramsArgIndex)
+		{
+			if (args == null || paramsArgIndex < 0 || paramsArgIndex >= args.Length)
+			{
+				throw new ArgumentException("Invalid arguments");
+			}
+
+			int paramsLength = args.Length - paramsArgIndex;
+			object[] paramsArg = new object[paramsLength];
+
+			Array.Copy(args, paramsArgIndex, paramsArg, 0, paramsLength);
+
+			if (paramsArgIndex == 0)
+			{
+				var result = new object[1];
+				result[0] = paramsArg;
+				return result;
+			}
+			else
+			{
+				object[] result = new object[paramsArgIndex + 1];
+				Array.Copy(args, 0, result, 0, paramsArgIndex);
+				result[paramsArgIndex] = paramsArg;
+				return result;
+			}
+		}
+
+		protected Array ConvertObjectArray(object[] args, Type targetType)
+		{
+			try
+			{
+				Array convertedArray = Array.CreateInstance(targetType, args.Length);
+
+				for (int i = 0; i < args.Length; i++)
+				{
+					convertedArray.SetValue(Convert.ChangeType(args[i], targetType), i);
+				}
+
+				return convertedArray;
+
+			}
+			catch (Exception)
+			{
+				throw new InvalidCastException($"Failed to convert to {targetType.FullName} array");
+			}
+		}
+
+		protected bool IsArray(object val, Type type, out Type elementType)
+		{
+			elementType = null;
+
+			if (val.GetType() == typeof(object[]) && type.IsArray)
+			{
+				elementType = type.GetElementType();
+				return true;
+			}
+
+			return false;
+		}
 	}
 
 }
