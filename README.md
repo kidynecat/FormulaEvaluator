@@ -1,60 +1,265 @@
-# NReco LambdaParser
-Runtime parser for string expressions (formulas, method calls, properties/fields/arrays accessors). `LambdaParser` builds dynamic LINQ expression tree and compiles it to the lambda delegate. Types are resolved at run-time like in dynamic languages. 
+# Formula syntax instructions  
+## Basic syntax:  
 
-NuGet | Windows x64 | Linux
---- | --- | ---
-[![NuGet Release](https://img.shields.io/nuget/v/NReco.LambdaParser.svg)](https://www.nuget.org/packages/NReco.LambdaParser/) | [![AppVeyor](https://img.shields.io/appveyor/ci/nreco/lambdaparser/master.svg)](https://ci.appveyor.com/project/nreco/lambdaparser) | ![Tests](https://github.com/nreco/lambdaparser/actions/workflows/dotnet-test.yml/badge.svg) 
+* **Arithmetic operations (+, -, \*, /, %);**  
+* **Comparisons (=, !=, >, <, >=, <=);**  
+* **Logical operators (&&, ||, !);**  
+* **Struct values (true, false, null);**  
+* **Conditionals including (ternary) operator ( ? : ).**  
 
-* can be used in *any* .NET app: net45 (legacy .NET Framework apps), netstandard1.3 (.NET Core apps), netstandard2.0 (all modern .NET apps).
-* any number of expression arguments (values can be provided as dictionary or by callback delegate)
-* supports arithmetic operations (+, -, *, /, %), comparisons (==, !=, >, <, >=, <=), conditionals including (ternary) operator ( boolVal ? whenTrue : whenFalse )
-* access object properties, call methods and indexers, invoke delegates
-* dynamic typed variables: performs automatic type conversions to match method signature or arithmetic operations
-* create arrays and dictionaries with simplified syntax: `new dictionary{ {"a", 1}, {"b", 2} }` , `new []{ 1, 2, 3}`
-* local variables that may go before main expression: `var a = 5; var b = contextVar/total*100;`  (disabled by default, to enable use `LambdaParser.AllowVars` property)
-
-Nuget package: [NReco.LambdaParser](https://www.nuget.org/packages/NReco.LambdaParser/)
-
+**Examples:**  
 ```
-var lambdaParser = new NReco.Linq.LambdaParser();
-
-var varContext = new Dictionary<string,object>();
-varContext["pi"] = 3.14M;
-varContext["one"] = 1M;
-varContext["two"] = 2M;
-varContext["test"] = "test";
-Console.WriteLine( lambdaParser.Eval("pi>one && 0<one ? (1+8)/3+1*two : 0", varContext) ); // --> 5
-Console.WriteLine( lambdaParser.Eval("test.ToUpper()", varContext) ); // --> TEST
+"hello" + " " + "world"
 ```
-(see [unit tests](https://github.com/nreco/lambdaparser/blob/master/src/NReco.LambdaParser.Tests/LambdaParserTests.cs) for more expression examples)
-
-## Custom values comparison
-By default `LambdaParser` uses `ValueComparer` for values comparison. You can provide your own implementation or configure its option to get desired behaviour:
-* `ValueComparer.NullComparison` determines how comparison with `null` is handled. 2 options: 
-  * `MinValue`: null is treated as minimal possible value for any type - like .NET IComparer
-  * `Sql`: null is not comparable with any type, including another null - like in SQL
-* `ValueComparer.SuppressErrors` allows to avoid convert exception. If error appears during comparison exception is not thrown and this means that values are not comparable (= any condition leads to `false`).
+— returns "hello world".  
 ```
-var valComparer = new ValueComparer() { NullComparison = ValueComparer.NullComparisonMode.Sql };
-var lambdaParser = new LambdaParser(valComparer); 
+50/2
 ```
-### Caching Expressions
-
-The `UseCache` property determines whether the `LambdaParser` should cache parsed expressions. By default, `UseCache` is set to `true`, meaning expressions are cached to improve performance for repeated evaluations of the same expression. 
-
-Therefore, using a singleton instance of `LambdaParser` is recommended, rather than creating a new instance each time.
-
-You can disable caching by setting UseCache to false if you want to save memory, especially when evaluating a large number of unique expressions.
-
-```csharp
-var lambdaParser = new LambdaParser();
-lambdaParser.UseCache = false;
+— returns 25.  
 ```
+true = !false
+```
+— returns true.  
+```
+true && false
+```
+— returns false.  
+```
+1 = 1 ? 1 : 0
+```
+— returns 1.  
 
-## Who is using this?
-NReco.LambdaParser is in production use at [SeekTable.com](https://www.seektable.com/) and [PivotData microservice](https://www.nrecosite.com/pivotdata_service.aspx) (used for user-defined calculated cube members: formulas, custom formatting).
+## System functions:  
+### Logical  
+#### IIF  
+**Description:** Takes three arguments as input. Returns the second argument if the first evaluates to TRUE. Otherwise returns the third argument. The "? :" operator can be used instead of IIF().  
+**Example:**
+```
+IIF(1 = 1, 1, 0)
+```
+— returns 1.  
+#### AND  
+**Description:** Returns TRUE if two arguments are TRUE; returns FALSE if any argument is FALSE. The "&&" operator can be used instead of AND().  
+**Example:** 
+```
+AND(2+2=4, 2+3=6)
+```
+— returns false.  
+#### OR  
+**Description:** Returns TRUE if any argument is TRUE. The "||" operator can be used instead of OR().  
+**Example:** 
+```
+OR(2+2=4, 2+3=6) 
+```
+— returns true.  
+#### NOT  
+**Description:** Reverses the value of its argument. The "!" operator can be used instead of NOT().  
+**Example:**
+```
+NOT(1+2=4) 
+```
+— returns true.  
+#### SWITCHCASE  
+**Description:** Evaluates an array of cases and returns a corresponding value if a true case is found, otherwise returns the default value. The casesAndValues array must have an even number of elements and contain alternating boolean conditions and corresponding values.  
+**Example:**  
+```
+SWITCHCASE("default result", false, "not matched", true, "matched")
+```
+— returns "matched".  
+#### SWITCHVALUE  
+**Description:** Switches the target value with a corresponding value from the provided cases. If the target value matches any case, the corresponding value is returned. Otherwise, the default value is returned. The casesAndValues array must have an even number of elements and alternate between condition values and corresponding values.  
+**Example:**  
+```
+SWITCHVALUE("targetValue", "default result", "a", "not matched", "targetValue", "matched")  
+```
+— returns "matched".  
 
-## License
-Copyright 2016-2024 Vitaliy Fedorchenko and contributors
+### Date  
+#### DATE  
+**Description:** Creates a date value from three numeric values.  
+**Example:** 
+```
+DATE(2012, 7, 4)
+```
+— returns the date July 4th, 2012.  
+#### NOW  
+**Description:** Returns today's date and time.  
+**Example:** 
+```
+NOW()
+```
+— returns the current date and time.  
+#### DATECUSTOMFORMAT  
+**Description:** Modifies a date value to be output in a specified format.  
+**Example:** 
+```
+DATECUSTOMFORMAT(DATE(2023,1,1),"MM-dd-yyyy")
+```
+— returns the string "01-01-2023".  
+#### DAYOFWEEK  
+**Description:** Returns the number of the weekday of a date, where 0 = Sunday, 1 = Monday, 2 = Tuesday … 6 = Saturday.  
+**Example:** 
+```
+DAYOFWEEK(DATE(2023, 7, 12))
+```
+— returns 3.  
 
-Distributed under the MIT license
+### String  
+#### CONCATENATE
+**Description:** Joins several text strings into one text string.
+**Example:**
+```
+CONCATENATE("a", "b", "c")
+```
+— returns "abc".
+#### SUBSTRING  
+**Description:** Gets a sub-string of a specified length, starting at a specified point in the string.  
+**Example:** 
+```
+SUBSTRING("abcdefg", 2, 2)
+```
+— returns "bc".  
+#### TRIM  
+**Description:** Returns string that remains after all white-space characters are removed from the start and end of the current string.  
+**Example:** 
+```
+TRIM("   test trim  ")
+```
+— returns "test trim".  
+#### LEN  
+**Description:** Returns the number of characters in a text string.  
+**Example:** 
+```
+LEN("example")
+```
+–– returns 7.  
+#### REPLACE  
+**Description:** Returns string that is equivalent to the current string except that all instances of oldValue are replaced with newValue.  
+**Example:** 
+```
+REPLACE("hello world!", "world", "transfinder")
+```
+— returns "hello transfinder!".  
+#### LEFT / RIGHT  
+**Description:** Returns the first/last character(s) of a text string.  
+**Example:** 
+```
+LEFT("patrol abc", 6) + RIGHT("def finder", 6)
+```
+— returns "patrolfinder".  
+#### UPPER / LOWER  
+**Description:** Returns string converted to uppercase/lowercase.  
+**Example:** 
+```
+UPPER("abc") + LOWER("DEF")
+```
+— returns "ABCdef".  
+#### NEWLINE  
+**Description:** Begins a new line of text.  
+**Example:** 
+```
+NEWLINE()
+```
+#### GETFROMJSON
+**Description:** Returns value from JSON object based on the key.
+**Example:**
+```
+GETFROMJSON("{\"key1\":\"aa\",\"key2\":\"bb\"}","key1")
+```
+— returns "aa". 
+#### SPLIT
+**Description:** Split a string based on a delimiter and return the content at the 
+specified index.
+**Example:**
+```
+SPLIT("a|b|c", "|", 2)
+```
+— returns "c". 
+
+### Aggregate  
+#### SUM  
+**Description:** Returns the sum of the values.  
+**Example:**  
+```
+SUM(1, 2, 3)
+```
+— returns 6.  
+#### AVG  
+**Description:** Returns the average of the values.  
+**Example:**  
+```
+AVG(0, 100)
+```
+— returns 50.  
+#### MAX  
+**Description:** Returns the maximun value.  
+**Example:**  
+```
+SUM(-1, 0, 1)
+```
+— returns 1.  
+#### MIN  
+**Description:** Returns the minimun value.  
+**Example:**  
+```
+SUM(-1, 0, 1)
+```
+— returns -1.  
+
+### Data Type  
+#### ISNULL  
+**Description:** Returns True if the argument is NULL. Otherwise returns False.  
+**Example:** 
+```
+ISNULL(null)
+```
+— returns true.  
+#### ISLOGICAL  
+**Description:** Checks if a value is TRUE or FALSE.  
+**Example:**
+```
+ISLOGICAL(1 = 2)
+```
+— returns true.  
+#### ISNUMERIC  
+**Description:** Returns True it is of type int, float, double, or decimal. Otherwise returns False.  
+**Example:** 
+```
+ISNUMERIC(3.14)
+```
+— returns true.  
+#### ISSTRING  
+**Description:** Returns True if it is string value. Otherwise returns False.  
+**Example:** 
+```
+ISSTRING(3.14) 
+```
+— returns false.  
+#### ISDATETIME  
+**Description:** Returns True if it is datetime value. Otherwise returns False.  
+**Example:** 
+```
+ISDATETIME(DATE(2023, 7, 12))
+```
+— returns true.  
+#### TOSTRING  
+**Description:** Try parsing the parameter into a String value.  
+**Example:** 
+```
+TOSTRING(1 = 1)
+```
+— returns "True".  
+#### TODATETIME  
+**Description:** Try parsing the parameter String into a DateTime value. If it fails, return null.  
+**Example:** 
+```
+TODATETIME("2012-07-04")
+```
+— returns the date July 4th, 2012.  
+#### TONUMERIC  
+**Description:** Try parsing the parameter String into a Decimal value. If it fails, return null.  
+**Example:** 
+```
+TONUMERIC("1.2")
+```
+— returns 1.2. 
